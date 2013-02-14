@@ -34,7 +34,6 @@ define("facebook_api_key", help="your Facebook application API key",
 define("facebook_secret", help="your Facebook application secret",
        default="9599e644b353d5c5607f3201a15614ae")
 
-
 class Application(tornado.web.Application):
     def __init__(self):
         handlers = [
@@ -65,11 +64,11 @@ class BaseHandler(tornado.web.RequestHandler):
         return tornado.escape.json_decode(user_json)
 
 class FqlReporterHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
+
+	MIN_LIKE_NUMBER = 5
     @tornado.web.authenticated
     @tornado.web.asynchronous
     def get(self):
-        #query = tornado.escape.url_escape('{"post_ids":"SELECT post_id FROM stream WHERE source_id=me() AND likes.count>0 LIMIT 5000",' + \
-        #        '"like_ids":"SELECT name,sex FROM user WHERE uid IN (SELECT user_id FROM like WHERE post_id IN (SELECT post_id FROM #post_ids))"}')
         query = '{"post_ids":"SELECT post_id FROM stream WHERE source_id=me() AND likes.count>0 LIMIT 5000",' + \
                 '"uids":"SELECT user_id FROM like WHERE post_id IN (SELECT post_id FROM #post_ids)",' +\
                 '"like_ids":"SELECT name,sex,uid FROM user WHERE uid IN (SELECT user_id FROM #uids)"}'
@@ -79,35 +78,24 @@ class FqlReporterHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
         self.o = {'name':'likes' , 'children':[ {'name':'female','children':[]} ,  {'name':'male','children':[]}  ]}
         self.set_header('Content-Type', 'application/json')
 
+	def __cal_likes(self, json):
+		result = {}
+        for p in json['data'][1]['fql_result_set']:
+            fid = p['user_id']
+            if fid in rr:
+                result[fid] = result[fid] + 1
+            else:
+                result[fid] = 1
+        return result
+		
     def _handle_result(self, r):
         if r is None:
             self._output()
         else:
-            m_r = {}
-            f_r = {}
-            rr = {}
-            for p in r['data'][1]['fql_result_set']:
-                fid = p['user_id']
-                if fid in rr:
-                    rr[fid] = rr[fid] + 1
-                else:
-                    rr[fid] = 1
-
-                """
-                if p['sex'] == 'female':
-                    if fid in f_r:
-                        f_r[fid] = f_r[fid] + 1 
-                    else:
-                        f_r[fid] = 1 
-                else:
-                    if fid in m_r:
-                        m_r[fid] = m_r[fid] + 1 
-                    else:
-                        m_r[fid] = 1
-                """
-            for u in rr:
-                size = rr[u]
-                if size >5:
+            users = __cal_likes(r)
+            for u in users:
+                size = users[u]
+                if size > self.MIN_LIKE_NUMBER:
                     user = self._get_user_info(r['data'][2]['fql_result_set'],u)
                     if user is None:
                         pass
@@ -116,14 +104,6 @@ class FqlReporterHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
                             self.o['children'][0]['children'].append({'name':user['name'] , 'size':size})        
                         else:
                             self.o['children'][1]['children'].append({'name':user['name'] , 'size':size})
-            """
-            for k in m_r:
-                if m_r[k]>5:
-                    self.o['children'][1]['children'].append({'name':k , 'size':m_r[k]})
-            for k in f_r:
-                if f_r[k]>5:
-                    self.o['children'][0]['children'].append({'name':k , 'size':f_r[k]})
-            """
             self._output()
 
     def _get_user_info(self,user_json,uid):
@@ -140,7 +120,7 @@ class ReporterHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
     @tornado.web.authenticated
     @tornado.web.asynchronous
     def get(self):
-        print "[debug] user = " + str(self.current_user) 
+        #print "[debug] user = " + str(self.current_user) 
         self.facebook_request("/me/posts", self._on_like,
                               access_token=self.current_user["access_token"])
         self.o = {'name':'likes' , 'children':[]}
@@ -153,7 +133,6 @@ class ReporterHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
         parsed = urlparse.urlparse(url)
         return urlparse.parse_qs(parsed.query)[key]
 
-#https://graph.facebook.com/801377271?method=GET&format=json&access_token=AAACEd...
     def __get_fb_name(self,id):
         http = httplib2.Http()
         url = 'https://graph.facebook.com/'+id+'?method=GET&format=json&access_token='+self.current_user["access_token"]
@@ -167,8 +146,6 @@ class ReporterHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
             j['name'] = self.__get_fb_name(j['id'])
 
     def _output(self):
-        # todo id transfer to name 
-        #self._trans_name(self.o)
         self.write(tornado.escape.json_encode(self.o))
         self.finish()
 
@@ -208,14 +185,10 @@ class MainHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
     @tornado.web.authenticated
     @tornado.web.asynchronous
     def get(self):
-        #print "[debug] user = " + str(self.current_user) 
-        #self.facebook_request("/me/home", self._on_stream,
         self.facebook_request("/me/posts", self.async_callback(self._on_like),
                               access_token=self.current_user["access_token"])
-        #self._on_like()
 
     def _on_like(self,likes):
-        #print "get likes : " + str(likes)
         if likes is None:
             self.redirect("/auth/login")
             return
@@ -227,7 +200,6 @@ class MainHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
             self.redirect("/auth/login")
             return
         self.render("stream.html", stream=stream)
-
 
 class AuthLoginHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
     @tornado.web.asynchronous
@@ -246,31 +218,26 @@ class AuthLoginHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
         self.authorize_redirect(redirect_uri=my_url,
                                 client_id=self.settings["facebook_api_key"],
                                 extra_params={"scope": "read_stream"})
-    
     def _on_auth(self, user):
         if not user:
             raise tornado.web.HTTPError(500, "Facebook auth failed")
         self.set_secure_cookie("user", tornado.escape.json_encode(user))
         self.redirect(self.get_argument("next", "/"))
 
-
 class AuthLogoutHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
     def get(self):
         self.clear_cookie("user")
         self.redirect(self.get_argument("next", "/"))
 
-
 class PostModule(tornado.web.UIModule):
     def render(self, post):
         return self.render_string("modules/post.html", post=post)
-
 
 def main():
     tornado.options.parse_command_line()
     http_server = tornado.httpserver.HTTPServer(Application())
     http_server.listen(options.port)
     tornado.ioloop.IOLoop.instance().start()
-
 
 if __name__ == "__main__":
     main()
