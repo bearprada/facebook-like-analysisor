@@ -64,8 +64,7 @@ class BaseHandler(tornado.web.RequestHandler):
         return tornado.escape.json_decode(user_json)
 
 class FqlReporterHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
-
-	MIN_LIKE_NUMBER = 5
+    MIN_LIKE_NUMBER = 5
     @tornado.web.authenticated
     @tornado.web.asynchronous
     def get(self):
